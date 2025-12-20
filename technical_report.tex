@@ -1,0 +1,767 @@
+\documentclass[12pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\geometry{margin=1in}
+
+% Header/Footer
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Neural Voice Conversion}
+\lhead{Jason Huynh}
+\cfoot{\thepage}
+
+% Title
+\title{\textbf{Neural Voice Conversion via Learned Speaker Embeddings \\
+and Time-Frequency Speech Representations}\\
+\large Technical Report}
+\author{Jason Huynh}
+\date{\today}
+
+% Code listing style
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!50!black},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny,
+    frame=single,
+    breaklines=true
+}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+% ============================================================================
+\section{Abstract}
+
+This report presents a comprehensive implementation of a neural voice conversion system that transforms source speech into a target speaker's voice while preserving linguistic content and prosody. The system employs a signals-heavy approach, combining classical digital signal processing techniques with modern deep learning architectures.
+
+The implementation consists of three main components: (1) a signal processing frontend for feature extraction, (2) learned speaker embeddings via deep metric learning, and (3) a content-speaker disentanglement framework for voice conversion. The system demonstrates proficiency in both electrical engineering fundamentals and machine learning, bridging DSP and neural network domains.
+
+% ============================================================================
+\section{Introduction}
+
+\subsection{Problem Statement}
+
+Voice conversion (VC) is the task of transforming source speech to sound like a target speaker while preserving the linguistic content and prosodic characteristics of the source utterance. Mathematically, given source speech $\mathbf{x}_s$ from speaker $S$ and a target speaker $T$, the objective is to generate output $\mathbf{y}$ such that:
+
+\begin{equation}
+    \mathbf{y} = f(\mathbf{x}_s, T) \quad \text{where} \quad \text{content}(\mathbf{y}) = \text{content}(\mathbf{x}_s) \land \text{speaker}(\mathbf{y}) = T
+\end{equation}
+
+This is a challenging problem requiring separation of \textit{what is being said} (linguistic content) from \textit{who is saying it} (speaker identity).
+
+\subsection{Motivation}
+
+Traditional voice conversion methods rely on:
+\begin{itemize}
+    \item Statistical parametric approaches (GMM, HMM)
+    \item Frame-wise spectral mapping
+    \item Hand-crafted features
+\end{itemize}
+
+Modern neural approaches offer:
+\begin{itemize}
+    \item End-to-end learning
+    \item Better generalization
+    \item Higher quality synthesis
+    \item Content-speaker disentanglement
+\end{itemize}
+
+\subsection{Objectives}
+
+This project implements:
+\begin{enumerate}
+    \item Complete DSP preprocessing pipeline
+    \item Perceptually-motivated acoustic feature extraction
+    \item Deep speaker embedding via metric learning
+    \item Content encoder with speaker-invariant representations
+    \item Conditional decoder for voice synthesis
+    \item High-quality neural vocoder for waveform generation
+\end{enumerate}
+
+% ============================================================================
+\section{Theoretical Background}
+
+\subsection{Digital Signal Processing Fundamentals}
+
+\subsubsection{Speech Signal Model}
+
+Speech production can be modeled as a source-filter model:
+
+\begin{equation}
+    s[n] = e[n] * v[n] * l[n]
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $e[n]$: excitation signal (glottal pulse train or noise)
+    \item $v[n]$: vocal tract filter (formants)
+    \item $l[n]$: lip radiation effect
+\end{itemize}
+
+\subsubsection{Pre-emphasis Filtering}
+
+Pre-emphasis compensates for the natural -6 dB/octave spectral tilt in speech:
+
+\begin{equation}
+    H_{pe}(z) = 1 - \alpha z^{-1}, \quad \alpha \in [0.95, 0.97]
+\end{equation}
+
+Time-domain implementation:
+\begin{equation}
+    \tilde{s}[n] = s[n] - \alpha \cdot s[n-1]
+\end{equation}
+
+This boosts high-frequency components, improving SNR for features like formants and consonants.
+
+\subsubsection{Short-Time Fourier Transform (STFT)}
+
+For time-varying speech signals, the STFT provides time-frequency representation:
+
+\begin{equation}
+    X[k, t] = \sum_{n=0}^{N-1} x[n + tH] \cdot w[n] \cdot e^{-j2\pi kn/N}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $N$: FFT size (1024)
+    \item $H$: hop length (160 samples = 10 ms @ 16 kHz)
+    \item $w[n]$: window function (Hann: $w[n] = 0.5(1 - \cos(2\pi n/N))$)
+\end{itemize}
+
+\subsection{Mel-Frequency Analysis}
+
+\subsubsection{Mel Scale}
+
+The mel scale approximates human auditory perception:
+
+\begin{equation}
+    m = 2595 \log_{10}\left(1 + \frac{f}{700}\right)
+\end{equation}
+
+Inverse transformation:
+\begin{equation}
+    f = 700\left(10^{m/2595} - 1\right)
+\end{equation}
+
+\subsubsection{Mel-Spectrogram Extraction}
+
+Process:
+\begin{enumerate}
+    \item Compute power spectrum: $P[k,t] = |X[k,t]|^2$
+    \item Apply mel filterbank: $M[m,t] = \sum_{k} B_m[k] \cdot P[k,t]$
+    \item Logarithmic compression: $\log(M[m,t] + \epsilon)$
+\end{enumerate}
+
+Mel filterbank $B_m[k]$ consists of triangular filters:
+\begin{equation}
+    B_m[k] = \begin{cases}
+        \frac{k - f[m-1]}{f[m] - f[m-1]} & f[m-1] \leq k < f[m] \\
+        \frac{f[m+1] - k}{f[m+1] - f[m]} & f[m] \leq k < f[m+1] \\
+        0 & \text{otherwise}
+    \end{cases}
+\end{equation}
+
+\subsection{Fundamental Frequency (F0) Extraction}
+
+\subsubsection{WORLD Vocoder}
+
+WORLD is a high-quality vocoder consisting of:
+\begin{itemize}
+    \item \textbf{DIO/Harvest}: F0 estimation algorithms
+    \item \textbf{CheapTrick}: Spectral envelope estimation
+    \item \textbf{D4C}: Band-aperiodicity estimation
+\end{itemize}
+
+\subsubsection{Harvest Algorithm}
+
+Harvest uses instantaneous frequency for robust F0 estimation:
+
+\begin{equation}
+    f_0[t] = \arg\max_{f} R(f, t)
+\end{equation}
+
+where $R(f,t)$ is the refined F0 candidate score based on harmonic structure.
+
+\subsection{Neural Network Architectures}
+
+\subsubsection{Speaker Embedding (DVec/x-vector)}
+
+\textbf{DVec (d-vector):}
+\begin{align}
+    \mathbf{h}_t &= \text{LSTM}(\mathbf{x}_t, \mathbf{h}_{t-1}) \\
+    \mathbf{d} &= \frac{1}{T}\sum_{t=1}^{T} \mathbf{h}_t \quad \text{(temporal averaging)}\\
+    \mathbf{e} &= \text{FC}(\mathbf{d}) \quad \text{(256-dim embedding)}
+\end{align}
+
+\textbf{Loss function} (GE2E - Generalized End-to-End):
+\begin{equation}
+    \mathcal{L}_{GE2E} = -\sum_{j,k} \log \frac{e^{w \cdot \cos(\mathbf{e}_{jk}, \mathbf{c}_j) + b}}{\sum_{i} e^{w \cdot \cos(\mathbf{e}_{jk}, \mathbf{c}_i) + b}}
+\end{equation}
+
+where $\mathbf{c}_j$ is the centroid of speaker $j$'s embeddings.
+
+\subsubsection{Content Encoder}
+
+Architecture:
+\begin{align}
+    \mathbf{z}_{\text{content}} &= \text{Encoder}(\mathbf{X}_{\text{mel}}) \\
+    &= \text{Conv1D}(\text{InstanceNorm}(\cdots))
+\end{align}
+
+Instance Normalization removes speaker-specific statistics:
+\begin{equation}
+    \text{IN}(\mathbf{x}) = \frac{\mathbf{x} - \mu(\mathbf{x})}{\sigma(\mathbf{x}) + \epsilon}
+\end{equation}
+
+This forces the encoder to learn content-only representations.
+
+\subsubsection{Conditional Decoder}
+
+Given content $\mathbf{z}_c$ and speaker embedding $\mathbf{e}_s$:
+
+\begin{equation}
+    \hat{\mathbf{X}}_{\text{mel}} = \text{Decoder}(\mathbf{z}_c, \mathbf{e}_s)
+\end{equation}
+
+Uses Adaptive Instance Normalization (AdaIN):
+\begin{equation}
+    \text{AdaIN}(\mathbf{z}, \mathbf{e}) = \sigma(\mathbf{e}) \cdot \frac{\mathbf{z} - \mu(\mathbf{z})}{\sigma(\mathbf{z})} + \mu(\mathbf{e})
+\end{equation}
+
+This conditions the generation on the target speaker.
+
+% ============================================================================
+\section{Design Methodology and Intuition}
+
+\subsection{Phase 2: Why These Neural Network Architectures?}
+
+This section explains the thought process and design decisions behind the neural network models, written for readers with minimal machine learning background.
+
+\subsubsection{The Core Challenge: Separating "What" from "Who"}
+
+Imagine trying to replicate someone's handwriting. You need two things:
+\begin{enumerate}
+    \item \textbf{What to write} (the message)
+    \item \textbf{How they write} (their handwriting style)
+\end{enumerate}
+
+Voice conversion is identical:
+\begin{itemize}
+    \item \textbf{Content} = What is being said (words, emotions, timing)
+    \item \textbf{Speaker} = Who is saying it (voice characteristics)
+\end{itemize}
+
+The challenge: These are \textit{mixed together} in the audio signal. We must:
+\begin{enumerate}
+    \item Learn to represent speaker identity independently
+    \item Extract content while removing speaker information
+    \item Recombine them to create new voice
+\end{enumerate}
+
+\subsubsection{Speaker Encoder: Creating a "Voice Fingerprint"}
+
+\textbf{Analogy to Word Embeddings (CBOW):}
+
+In natural language processing (NLP), word embeddings capture word meaning:
+\begin{itemize}
+    \item Words with similar meanings → similar embeddings
+    \item Example: "king" and "queen" are close in embedding space
+    \item Learned by predicting words from context
+\end{itemize}
+
+The speaker encoder does the same for voices:
+\begin{itemize}
+    \item Same speaker → similar embeddings
+    \item Different speakers → distant embeddings
+    \item Learned by predicting speaker identity from audio
+\end{itemize}
+
+\paragraph{Why LSTM (Recurrent Neural Network)?}
+
+Speech is inherently \textbf{temporal} — meaning matters over time:
+\begin{itemize}
+    \item Pronunciation spans multiple frames
+    \item Prosody (rhythm, intonation) unfolds over seconds
+    \item Speaker characteristics are consistent across time
+\end{itemize}
+
+LSTM (Long Short-Term Memory) is designed for sequential data:
+\begin{equation}
+    \mathbf{h}_t = f(\mathbf{h}_{t-1}, \mathbf{x}_t) \quad \text{(hidden state tracks history)}
+\end{equation}
+
+Alternative considered: CNNs (Convolutional Neural Networks)
+\begin{itemize}
+    \item \textbf{Pro}: Faster, parallelizable
+    \item \textbf{Con}: Limited temporal context
+    \item \textbf{Decision}: LSTM chosen for better speaker modeling
+\end{itemize}
+
+\paragraph{Why Temporal Average Pooling?}
+
+After processing with LSTM, we have:
+\begin{itemize}
+    \item $\mathbf{h}_1, \mathbf{h}_2, \ldots, \mathbf{h}_T$ (hidden states at each time step)
+    \item Need: Single embedding representing entire speaker
+\end{itemize}
+
+Options:
+\begin{enumerate}
+    \item \textbf{Last timestep}: $\mathbf{e} = \mathbf{h}_T$
+    \begin{itemize}
+        \item Problem: Biased toward end of utterance
+    \end{itemize}
+    
+    \item \textbf{Max pooling}: $\mathbf{e} = \max(\mathbf{h}_t)$
+    \begin{itemize}
+        \item Problem: Dominated by outliers
+    \end{itemize}
+    
+    \item \textbf{Average pooling}: $\mathbf{e} = \frac{1}{T}\sum_{t} \mathbf{h}_t$
+    \begin{itemize}
+        \item \textbf{Chosen}: Captures overall voice characteristics
+        \item Stable, robust to utterance length
+    \end{itemize}
+\end{enumerate}
+
+\paragraph{Why GE2E Loss Instead of Classification?}
+
+Traditional approach: Classify speaker identity
+\begin{itemize}
+    \item Problem: Requires fixed number of speakers
+    \item Can't generalize to new speakers
+\end{itemize}
+
+GE2E (Generalized End-to-End) uses \textbf{metric learning}:
+\begin{itemize}
+    \item Goal: Embeddings from same speaker should be \textit{close}
+    \item Embeddings from different speakers should be \textit{far}
+    \item Measured using cosine similarity
+\end{itemize}
+
+Mathematical intuition:
+\begin{equation}
+    \mathcal{L}_{GE2E} = -\log\left(\frac{e^{\text{sim}(\mathbf{e}_{jk}, \mathbf{c}_j)}}{\sum_i e^{\text{sim}(\mathbf{e}_{jk}, \mathbf{c}_i)}}\right)
+\end{equation}
+
+\begin{itemize}
+    \item Numerator: Similarity to own speaker centroid (should be high)
+    \item Denominator: Similarity to all speaker centroids
+    \item Loss minimization: Push embedding toward its speaker, away from others
+\end{itemize}
+
+\subsubsection{Content Encoder: Removing Speaker Identity}
+
+\textbf{Key Insight}: Speaker characteristics hide in \textit{statistics}
+
+Consider two speakers saying "hello":
+\begin{itemize}
+    \item \textbf{Content (shared)}: Phonetic sequence /h/-/e/-/l/-/o/
+    \item \textbf{Speaker 1 (deep voice)}: Low mean frequency, wide variance
+    \item \textbf{Speaker 2 (high voice)}: High mean frequency, narrow variance
+\end{itemize}
+
+\paragraph{Instance Normalization: The Key Trick}
+
+Instance Normalization removes per-sample statistics:
+\begin{equation}
+    \text{IN}(\mathbf{x}) = \frac{\mathbf{x} - \mu(\mathbf{x})}{\sigma(\mathbf{x})}
+\end{equation}
+
+\textbf{What it does}:
+\begin{itemize}
+    \item Subtracts mean: Removes absolute pitch/energy
+    \item Divides by std: Removes voice "spread"
+    \item Keeps: Relative patterns (content!)
+\end{itemize}
+
+Analogy: Black-and-white photo vs. color photo
+\begin{itemize}
+    \item Color (speaker-specific): Red car, blue shirt
+    \item Grayscale (content): Car shape, person outline
+    \item Instance Norm: Converts to grayscale, preserving structure
+\end{itemize}
+
+\paragraph{Why CNN for Content Encoder?}
+
+Unlike speaker (temporal), content has \textbf{hierarchical structure}:
+\begin{itemize}
+    \item Low level: Phonemes (/s/, /t/, /a/)
+    \item Mid level: Syllables (sta, ble)
+    \item High level: Words (stable
+
+)
+\end{itemize}
+
+CNN layers naturally build this hierarchy:
+\begin{align}
+    \text{Layer 1 (Conv)} &\rightarrow \text{Phoneme features} \\
+    \text{Layer 2 (Conv)} &\rightarrow \text{Syllable patterns} \\
+    \text{Layer 3 (Conv)} &\rightarrow \text{Word-level content}
+\end{align}
+
+\paragraph{Why Downsampling (Stride=2)?}
+
+Each conv layer with stride=2 reduces time dimension by half:
+\begin{itemize}
+    \item \textbf{Benefit 1}: Computational efficiency (fewer parameters)
+    \item \textbf{Benefit 2}: Larger receptive field (captures longer context)
+    \item \textbf{Benefit 3}: Forces abstraction (removes fine-grained speaker details)
+\end{itemize}
+
+\subsubsection{Decoder: Injecting Speaker Characteristics}
+
+\textbf{Goal}: Given content + speaker embedding, generate mel-spectrogram
+
+\paragraph{Adaptive Instance Normalization (AdaIN): The Magic}
+
+Standard approach: Concatenate content and speaker
+\begin{itemize}
+    \item Problem: Speaker info gets "averaged out" during processing
+\end{itemize}
+
+AdaIN: \textit{Modulates} content based on speaker
+\begin{equation}
+    \text{AdaIN}(\mathbf{z}_c, \mathbf{e}_s) = \gamma(\mathbf{e}_s) \cdot \frac{\mathbf{z}_c - \mu(\mathbf{z}_c)}{\sigma(\mathbf{z}_c)} + \beta(\mathbf{e}_s)
+\end{equation}
+
+\textbf{Intuition}:
+\begin{itemize}
+    \item Normalize content: $\frac{\mathbf{z}_c - \mu}{\sigma}$ (removes any residual speaker info)
+    \item Scale: $\gamma(\mathbf{e}_s)$ (sets voice "spread"/variance)
+    \item Shift: $\beta(\mathbf{e}_s)$ (sets voice "center"/mean frequency)
+\end{itemize}
+
+Analogy: Photo filters
+\begin{itemize}
+    \item Content: Photo structure (edges, shapes)
+    \item AdaIN scale: Contrast adjustment
+    \item AdaIN shift: Brightness adjustment
+    \item Speaker embedding: Determines filter parameters
+\end{itemize}
+
+\paragraph{Why Transposed Convolution for Upsampling?}
+
+Content encoder downsampled: 80 mels, 100 frames → 512 channels, 25 frames
+
+Decoder must upsample: 512 channels, 25 frames → 80 mels, 100 frames
+
+Options:
+\begin{enumerate}
+    \item \textbf{Nearest-neighbor interpolation}
+    \begin{itemize}
+        \item Simple, but creates blocky artifacts
+    \end{itemize}
+    
+    \item \textbf{Bilinear interpolation}
+    \begin{itemize}
+        \item Smooth, but blurry
+    \end{itemize}
+    
+    \item \textbf{Transposed convolution (chosen)}
+    \begin{itemize}
+        \item Learnable upsampling
+        \item Network learns optimal reconstruction
+        \item Avoids artifacts through training
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Design Trade-offs and Alternatives}
+
+\subsubsection{Why Not Use a Single Large Model?}
+
+Could we train one network: audio → converted audio?
+
+\textbf{Problems}:
+\begin{itemize}
+    \item No interpretability (can't debug)
+    \item Can't reuse speaker embeddings
+    \item Requires more data
+    \item Harder to generalize to new speakers
+\end{itemize}
+
+\textbf{Our modular approach}:
+\begin{itemize}
+    \item Train speaker encoder once, reuse for all speakers
+    \item Content encoder learns language-agnostic representations
+    \item Decoder is shared across all conversions
+\end{itemize}
+
+\subsubsection{Connection to Other ML Paradigms}
+
+\paragraph{Relationship to Autoencoders}
+
+Our system IS an autoencoder with constraints:
+\begin{align}
+    \text{Audio} &\xrightarrow{\text{Encode}} (\mathbf{z}_{\text{content}}, \mathbf{z}_{\text{speaker}}) \\
+    &\xrightarrow{\text{Decode}} \text{Reconstructed Audio}
+\end{align}
+
+But with disentanglement enforced:
+\begin{itemize}
+    \item Content encoder: Can't use speaker info (Instance Norm)
+    \item Speaker encoder: Trained separately (metric learning)
+    \item Decoder: Explicitly conditioned on speaker (AdaIN)
+\end{itemize}
+
+\paragraph{Relationship to GANs (Generative Adversarial Networks)}
+
+Future enhancement (not yet implemented):
+\begin{itemize}
+    \item Current: L1 reconstruction loss (blurry)
+    \item With GAN: Adversarial loss (sharper, more realistic)
+    \item Trade-off: Stability vs. quality
+\end{itemize}
+
+% ============================================================================
+\section{Implementation}
+
+\subsection{Phase 1: Signal Processing Foundation}
+
+\subsubsection{Preprocessing Pipeline}
+
+Implemented in \texttt{signal\_processing/preprocessing.py}:
+
+\begin{algorithmic}
+\STATE \textbf{Input:} Raw audio $s[n]$, sample rate $f_s$
+\STATE Resample to 16 kHz if needed
+\STATE Normalize RMS level to -20 dB
+\STATE Trim leading/trailing silence (VAD)
+\STATE Apply pre-emphasis: $\tilde{s}[n] = s[n] - 0.97 \cdot s[n-1]$
+\STATE \textbf{Output:} Preprocessed audio $\tilde{s}[n]$
+\end{algorithmic}
+
+\textbf{Voice Activity Detection (VAD):}
+
+Uses energy and zero-crossing rate:
+\begin{align}
+    E[i] &= \frac{1}{N}\sum_{n} x_i^2[n] \\
+    \text{ZCR}[i] &= \frac{1}{2N}\sum_{n} |\text{sgn}(x[n]) - \text{sgn}(x[n-1])|\\
+    \text{VAD}[i] &= (E[i] > \theta_E) \land (\text{ZCR}[i] < \theta_Z)
+\end{align}
+
+\subsubsection{Feature Extraction}
+
+Implemented in \texttt{signal\_processing/features.py}:
+
+\textbf{Mel-spectrogram parameters:}
+\begin{itemize}
+    \item Sample rate: 16 kHz
+    \item FFT size: 1024
+    \item Hop length: 160 (10 ms)
+    \item Mel filters: 80
+    \item Frequency range: 50-8000 Hz
+\end{itemize}
+
+\textbf{F0 extraction:}
+\begin{lstlisting}[language=Python]
+f0, time_axis = pw.harvest(
+    audio, sample_rate,
+    f0_floor=71.0,  # ~D2
+    f0_ceil=800.0,  # ~G5
+    frame_period=10.0  # ms
+)
+\end{lstlisting}
+
+\subsection{Phase 2: Neural Network Models}
+
+\subsubsection{Speaker Encoder Architecture}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Layer & Output Shape & Parameters \\
+\midrule
+Input (Mel) & (80, T) & - \\
+LSTM-1 & (256, T) & 345,088 \\
+LSTM-2 & (256, T) & 525,312 \\
+LSTM-3 & (256, T) & 525,312 \\
+Temporal Pool & (256,) & - \\
+FC (Projection) & (256,) & 65,792 \\
+L2 Normalize & (256,) & - \\
+\bottomrule
+\end{tabular}
+\caption{Speaker Encoder (DVec) Architecture}
+\end{table}
+
+\subsubsection{Content Encoder Architecture}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Layer & Output Shape & Activation \\
+\midrule
+Input (Mel) & (80, T) & - \\
+Conv1D (k=3) & (128, T) & ReLU \\
+InstanceNorm & (128, T) & - \\
+Conv1D (k=3, s=2) & (256, T/2) & ReLU \\
+InstanceNorm & (256, T/2) & - \\
+Conv1D (k=3, s=2) & (512, T/4) & ReLU \\
+InstanceNorm & (512, T/4) & - \\
+\bottomrule
+\end{tabular}
+\caption{Content Encoder Architecture}
+\end{table}
+
+\subsection{Training Strategy}
+
+\subsubsection{Loss Functions}
+
+\textbf{1. Reconstruction Loss:}
+\begin{equation}
+    \mathcal{L}_{\text{recon}} = \|\mathbf{X}_{\text{mel}} - \hat{\mathbf{X}}_{\text{mel}}\|_1 + \lambda_{\text{stft}} \|\text{STFT}(x) - \text{STFT}(\hat{x})\|_1
+\end{equation}
+
+\textbf{2. Speaker Similarity Loss:}
+\begin{equation}
+    \mathcal{L}_{\text{spk}} = 1 - \cos(\mathbf{e}_{\text{source}}, \mathbf{e}_{\text{target}})
+\end{equation}
+
+\textbf{3. F0 Loss (Prosody Preservation):}
+\begin{equation}
+    \mathcal{L}_{F0} = \text{MSE}(F0_{\text{source}}, F0_{\text{converted}})
+\end{equation}
+
+\textbf{Total Loss:}
+\begin{equation}
+    \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{recon}} + \lambda_{\text{spk}} \mathcal{L}_{\text{spk}} + \lambda_{F0} \mathcal{L}_{F0}
+\end{equation}
+
+\subsubsection{Training Procedure}
+
+\begin{algorithmic}
+\STATE \textbf{Stage 1:} Pre-train speaker encoder (100k steps)
+\STATE \quad Use speaker verification task (GE2E loss)
+\STATE \quad Dataset: VCTK (110 speakers)
+\STATE
+\STATE \textbf{Stage 2:} Train content encoder + decoder (200k steps)
+\STATE \quad Freeze speaker encoder
+\STATE \quad Use reconstruction + speaker losses
+\STATE \quad Adam optimizer, $\beta_1=0.9$, $\beta_2=0.999$
+\STATE \quad Learning rate: $2 \times 10^{-4}$ with cosine annealing
+\STATE \quad Gradient clipping: max norm = 2.0
+\end{algorithmic}
+
+% ============================================================================
+\section{Evaluation Metrics}
+
+\subsection{Objective Metrics}
+
+\subsubsection{Mel Cepstral Distortion (MCD)}
+
+\begin{equation}
+    \text{MCD} = \frac{10}{\ln 10} \sqrt{2 \sum_{i=1}^{D} (c_i - \hat{c}_i)^2}
+\end{equation}
+
+where $c_i$ are mel-cepstral coefficients. MCD $< 6.0$ dB indicates good quality.
+
+\subsubsection{F0 Root Mean Square Error}
+
+\begin{equation}
+    \text{F0-RMSE} = \sqrt{\frac{1}{T}\sum_{t=1}^{T} (F0[t] - \hat{F0}[t])^2}
+\end{equation}
+
+Target: $< 15$ Hz for good prosody preservation.
+
+\subsubsection{Speaker Similarity}
+
+\begin{equation}
+    \text{Similarity} = \frac{\mathbf{e}_{\text{converted}} \cdot \mathbf{e}_{\text{target}}}{\|\mathbf{e}_{\text{converted}}\| \|\mathbf{e}_{\text{target}}\|}
+\end{equation}
+
+Target: $> 0.8$ for successful conversion.
+
+\subsection{Subjective Metrics}
+
+\textbf{Mean Opinion Score (MOS):}
+\begin{itemize}
+    \item Quality: 1-5 scale (naturalness)
+    \item Similarity: 1-5 scale (speaker likeness)
+\end{itemize}
+
+% ============================================================================
+\section{Results}
+
+\textit{To be filled after training completion.}
+
+\subsection{Phase 1: Signal Processing Validation}
+
+\subsection{Phase 2: Speaker Embedding Quality}
+
+\subsection{Phase 3: Voice Conversion Performance}
+
+\subsection{Comparison with Baseline Methods}
+
+% ============================================================================
+\section{Discussion}
+
+\subsection{Signals vs. Machine Learning Trade-offs}
+
+\subsection{Limitations and Future Work}
+
+% ============================================================================
+\section{Conclusion}
+
+This project demonstrates a comprehensive implementation of neural voice conversion, bridging classical DSP and modern deep learning. The signals-heavy approach ensures high-quality feature extraction, while learned representations enable flexible voice transformation.
+
+% ============================================================================
+\section{References}
+
+\begin{enumerate}
+    \item Morise, M., et al. "WORLD: A vocoder-based high-quality speech synthesis system for real-time applications." IEICE Trans., 2016.
+    \item Wan, L., et al. "Generalized End-to-End Loss for Speaker Verification." ICASSP, 2018.
+    \item Qian, K., et al. "AutoVC: Zero-Shot Voice Style Transfer with Only Autoencoder Loss." ICML, 2019.
+    \item Kong, J., et al. "HiFi-GAN: Generative Adversarial Networks for Efficient and High Fidelity Speech Synthesis." NeurIPS, 2020.
+\end{enumerate}
+
+% ============================================================================
+\appendix
+
+\section{Code Listings}
+
+\subsection{Preprocessing Pipeline}
+
+\begin{lstlisting}[caption={Pre-emphasis filter implementation}]
+def apply_preemphasis(audio, coef=0.97):
+    """Apply pre-emphasis filter: H(z) = 1 - alpha*z^(-1)"""
+    return np.append(audio[0], audio[1:] - coef * audio[:-1])
+\end{lstlisting}
+
+\subsection{Feature Extraction}
+
+\begin{lstlisting}[caption={Mel-spectrogram extraction}]
+def extract_melspectrogram(audio, sr=16000, n_fft=1024, 
+                          hop=160, n_mels=80):
+    stft = librosa.stft(audio, n_fft=n_fft, hop_length=hop)
+    mel_basis = librosa.filters.mel(sr=sr, n_fft=n_fft, 
+                                     n_mels=n_mels)
+    mel_spec = np.dot(mel_basis, np.abs(stft)**2)
+    return np.log(mel_spec + 1e-10)
+\end{lstlisting}
+
+\end{document}
