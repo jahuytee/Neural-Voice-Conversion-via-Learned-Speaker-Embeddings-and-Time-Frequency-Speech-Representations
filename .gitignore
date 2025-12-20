@@ -1,0 +1,61 @@
+# Add to .gitignore - NEVER commit these
+private_data/
+lebron/
+*.lebron
+*_lebron_*
+private_models/
+celebrity_voices/
+experimental_targets/
+
+# Standard ignores
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints
+checkpoints/
+logs/
+runs/
+wandb/
+
+# Audio files (except examples)
+*.wav
+*.mp3
+*.flac
+!examples/*.wav
+
+# Datasets
+datasets/
+data/raw/
+data/processed/
