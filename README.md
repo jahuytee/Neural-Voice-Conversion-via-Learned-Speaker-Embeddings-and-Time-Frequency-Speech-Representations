@@ -207,7 +207,7 @@ If you use this code in your research, please cite:
 
 ```bibtex
 @misc{voice_conversion_2024,
-  author = {Jason Huynh},
+  author = {Jason Tran},
   title = {Neural Voice Conversion via Learned Speaker Embeddings and Time-Frequency Speech Representations},
   year = {2024},
   publisher = {GitHub},
