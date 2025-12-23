@@ -626,7 +626,147 @@ InstanceNorm & (512, T/4) & - \\
 \bottomrule
 \end{tabular}
 \caption{Content Encoder Architecture}
-\end{table}
+\subsection{Phase 3: Loss Functions and Dataset}
+
+\subsubsection{Loss Function Implementation}
+
+Implemented in \texttt{training/losses.py}:
+
+\textbf{Reconstruction Loss:}
+\begin{lstlisting}[language=Python]
+class ReconstructionLoss(nn.Module):
+    def forward(self, predicted, target):
+        # L1 loss on mel-spectrogram
+        mel_loss = F.l1_loss(predicted, target)
+        
+        # Spectral loss on waveform (if provided)
+        if waveform_pred is not None:
+            spectral_loss = self._spectral_loss(
+                waveform_pred, waveform_target
+            )
+            return mel_loss + spectral_weight * spectral_loss
+        return mel_loss
+\end{lstlisting}
+
+\textbf{Speaker Similarity Loss:}
+\begin{equation}
+    \mathcal{L}_{\text{spk}} = 1 - \frac{\mathbf{e}_{\text{converted}} \cdot \mathbf{e}_{\text{target}}}{\|\mathbf{e}_{\text{converted}}\| \|\mathbf{e}_{\text{target}}\|}
+\end{equation}
+
+\textbf{F0 Prosody Loss:}
+Weighted MSE with higher weight for voiced frames:
+\begin{equation}
+    \mathcal{L}_{F0} = \frac{1}{N}\sum_{t=1}^{N} w_t \cdot (F0[t] - \hat{F0}[t])^2
+\end{equation}
+where $w_t = 2.0$ for voiced frames, $w_t = 1.0$ for unvoiced.
+
+\subsubsection{Dataset Implementation}
+
+Implemented in \texttt{training/dataset.py}:
+
+\textbf{Features:}
+\begin{itemize}
+    \item Multi-speaker audio loading
+    \item On-the-fly feature extraction
+    \item Feature caching for efficiency
+    \item Data augmentation (gain, noise injection)
+    \item Variable-length sequence handling
+\end{itemize}
+
+\begin{lstlisting}[language=Python]
+class VoiceConversionDataset(Dataset):
+    def __getitem__(self, idx):
+        # Load and preprocess audio
+        audio = self._load_audio(audio_path)
+        
+        # Extract features
+        features = self.feature_extractor.extract_all_features(audio)
+        
+        # Cache for future use
+        if self.cache_dir:
+            cache_path.save(features)
+        
+        return {
+            'mel': features['mel'],
+            'f0': features['f0'],
+            'speaker_id': speaker_id
+        }
+\end{lstlisting}
+
+\textbf{Data Augmentation:}
+\begin{itemize}
+    \item Random gain: $x \rightarrow \alpha \cdot x$, $\alpha \in [0.8, 1.2]$
+    \item Noise injection: $x \rightarrow x + \epsilon$, $\epsilon \sim \mathcal{N}(0, 0.005)$
+\end{itemize}
+
+\subsection{Phase 4: Training Scripts}
+
+\subsubsection{Speaker Encoder Training}
+
+Implemented in \texttt{scripts/train\_speaker\_encoder.py}:
+
+\begin{algorithmic}
+\FOR{epoch in 1..num\_epochs}
+    \FOR{batch in dataloader}
+        \STATE Group utterances by speaker
+        \STATE embeddings = speaker\_encoder(mels)
+        \STATE loss = GE2E\_loss(embeddings)
+        \STATE loss.backward()
+        \STATE optimizer.step()
+    \ENDFOR
+    \STATE scheduler.step()
+    \IF{epoch mod 10 == 0}
+        \STATE save\_checkpoint(epoch)
+    \ENDIF
+\ENDFOR
+\end{algorithmic}
+
+\textbf{Hyperparameters:}
+\begin{itemize}
+    \item Optimizer: AdamW ($\beta_1=0.9$, $\beta_2=0.999$)
+    \item Learning rate: $2 \times 10^{-4}$ with cosine annealing
+    \item Batch size: 16
+    \item Gradient clipping: max norm = 2.0
+    \item Training epochs: 100
+\end{itemize}
+
+\subsubsection{Voice Conversion Training}
+
+Implemented in \texttt{scripts/train\_vc.py}:
+
+\begin{algorithmic}
+\STATE Load trained speaker encoder (freeze)
+\FOR{epoch in 1..num\_epochs}
+    \FOR{batch in dataloader}
+        \STATE source\_emb = speaker\_encoder(source\_mel)
+        \STATE content = content\_encoder(source\_mel)
+        \STATE converted = decoder(content, target\_emb)
+        \STATE converted\_emb = speaker\_encoder(converted)
+        \STATE
+        \STATE losses = compute\_losses(
+        \STATE \quad predicted=converted,
+        \STATE \quad target=target\_mel,
+        \STATE \quad spk\_emb=converted\_emb,
+        \STATE \quad target\_spk=target\_emb,
+        \STATE \quad f0\_pred=f0\_pred,
+        \STATE \quad f0\_target=f0\_target
+        \STATE )
+        \STATE
+        \STATE loss = losses['total']
+        \STATE loss.backward()
+        \STATE optimizer.step()
+    \ENDFOR
+\ENDFOR
+\end{algorithmic}
+
+\textbf{Hyperparameters:}
+\begin{itemize}
+    \item Optimizer: AdamW ($\beta_1=0.9$, $\beta_2=0.999$)
+    \item Learning rate: $1 \times 10^{-4}$ with cosine annealing
+    \item Batch size: 8 (smaller due to memory)
+    \item Loss weights: $\lambda_{\text{recon}}=1.0$, $\lambda_{\text{spk}}=0.1$, $\lambda_{F0}=0.5$
+    \item Training epochs: 200
+\end{itemize}
 
 \subsection{Training Strategy}
 
